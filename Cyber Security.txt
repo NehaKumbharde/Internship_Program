@@ -1,0 +1,30 @@
+1)pfSense ISO
+
+a) wget /path/to/pfSense-CE-XX.iso -O ~/Downloads/pfSense.iso
+b) sha256sum ~/Downloads/pfSense.iso
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+2)pfSense VM
+
+VBoxManage createvm --name pfSense --ostype FreeBSD_64 --register
+VBoxManage modifyvm pfSense --cpus 2 --memory 2048 --vram 16
+# create disk (size in MB)
+mkdir -p "$HOME/VirtualBox VMs/pfSense"
+VBoxManage createhd --filename "$HOME/VirtualBox VMs/pfSense/pfSense.vdi" --size 8192
+
+# storage controller + attach disk + attach ISO
+VBoxManage storagectl pfSense --name "SATA" --add sata --controller IntelAhci
+VBoxManage storageattach pfSense --storagectl "SATA" --port 0 --device 0 --type hdd --medium "$HOME/VirtualBox VMs/pfSense/pfSense.vdi"
+VBoxManage storageattach pfSense --storagectl "SATA" --port 1 --device 0 --type dvddrive --medium ~/Downloads/pfSense.iso
+
+# NICs: nic1 = NAT (WAN), nic2 = host-only (LAN)
+VBoxManage modifyvm pfSense --nic1 nat --nic2 hostonly --hostonlyadapter2 vboxnet0
+# allow promisc mode on LAN if you run other VMs on the same host-only network
+VBoxManage modifyvm pfSense --nicpromisc2 allow-all
+
+# start VM (GUI)
+VBoxManage startvm pfSense
+# OR headless: VBoxManage startvm pfSense --type headless
+
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
