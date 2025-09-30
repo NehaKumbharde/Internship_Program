@@ -1,0 +1,219 @@
+1)docker-compose.yml
+
+version: "3.8"
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: todo
+      POSTGRES_PASSWORD: todo_password
+      POSTGRES_DB: todo_db
+    volumes:
+      - db_data:/var/lib/postgresql/data
+  todoapp:
+    build: .
+    ports:
+      - "5000:5000"
+    environment:
+      DATABASE_URL: postgres://todo:todo_password@db:5432/todo_db
+    depends_on:
+      - db
+
+volumes:
+  db_data:
+----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+2)todo-deployment.yaml
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: todoapp
+  labels:
+    app: todoapp
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: todoapp }
+  template:
+    metadata:
+      labels: { app: todoapp }
+    spec:
+      containers:
+      - name: todoapp
+        image: ghcr.io/yourorg/todoapp:latest   # replace with your registry/image
+        ports:
+        - containerPort: 5000
+        env:
+        - name: DATABASE_URL
+          value: "postgres://todo:todo_password@postgres:5432/todo_db"
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: 5000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+3)todo-service.yaml
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: todoapp
+spec:
+  selector:
+    app: todoapp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 5000
+  type: ClusterIP
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+4)postgres-statefulset.yaml
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: "postgres"
+  replicas: 1
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      containers:
+      - name: postgres
+        image: postgres:15
+        ports: [{ containerPort: 5432 }]
+        env:
+        - name: POSTGRES_DB
+          value: todo_db
+        - name: POSTGRES_USER
+          value: todo
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: postgres-secret
+              key: password
+        volumeMounts:
+        - name: postgres-data
+          mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:
+  - metadata:
+      name: postgres-data
+    spec:
+      accessModes: ["ReadWriteOnce"]
+      resources:
+        requests:
+          storage: 10Gi
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+5)pv-manual.yaml
+
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: pv-postgres
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteOnce
+  hostPath:
+    path: /mnt/data/postgres
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: manual
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+6)pvc-manual.yaml
+
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-pvc
+spec:
+  accessModes: [ ReadWriteOnce ]
+  resources:
+    requests:
+      storage: 10Gi
+  storageClassName: manual
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+7).github/workflows/ci.yml
+
+name: CI - Build & Push
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v2
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GHCR_PAT }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/${{ github.repository_owner }}/todoapp:${{ github.sha }}
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+8)servicemonitor.yaml
+
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: todoapp-servicemonitor
+  labels:
+    release: kube-prom-stack
+spec:
+  selector:
+    matchLabels:
+      app: todoapp
+  namespaceSelector:
+    any: true
+  endpoints:
+    - port: http-metrics
+      path: /metrics
+      interval: 15s
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+9)prometheusrule.yaml
+
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: todoapp-rules
+spec:
+  groups:
+  - name: todoapp.rules
+    rules:
+    - alert: HighCPUUsage
+      expr: sum(rate(container_cpu_usage_seconds_total{pod=~"todoapp.*"}[5m])) by (pod) > 0.8
+      for: 5m
+      labels:
+        severity: page
+      annotations:
+        summary: "High CPU on {{ $labels.pod }}"
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
